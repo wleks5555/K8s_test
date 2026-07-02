@@ -7,7 +7,7 @@
 ## 1. Azure CLI (az) — 인프라 관리
 
 ### 로그인 / 기본
-| 명령어 | 용도 |
+ 명령어 | 용도 |
 |---|---|
 | `az login` | Azure 로그인 |
 | `az account show` | 현재 구독 정보 확인 |

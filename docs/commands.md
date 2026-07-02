@@ -1,4 +1,4 @@
-# 쿠버네티스 · AKS 명령어 치트시트
+# 쿠버네티스 · AKS 명령어 & 트러블슈팅 치트시트
 
 > az = 클러스터 바깥(인프라) 관리 · kubectl = 클러스터 안(워크로드) 관리
 
@@ -7,7 +7,7 @@
 ## 1. Azure CLI (az) — 인프라 관리
 
 ### 로그인 / 기본
- 명령어 | 용도 |
+| 명령어 | 용도 |
 |---|---|
 | `az login` | Azure 로그인 |
 | `az account show` | 현재 구독 정보 확인 |
@@ -40,11 +40,11 @@
 | `az acr build --registry <ACR> --image <이름>:<태그> .` | 이미지 빌드 + 저장 |
 | `az acr repository list -n <ACR>` | 저장된 이미지 목록 |
 
-### 서비스 등록 (MissingSubscriptionRegistration 에러 해결)
+### 서비스 등록
 | 명령어 | 용도 |
 |---|---|
 | `az provider register --namespace Microsoft.ContainerRegistry` | 서비스 활성화 |
-| `az provider show --namespace Microsoft.ContainerRegistry --query registrationState -o tsv` | 등록 상태 확인 (Registered 확인) |
+| `az provider show --namespace Microsoft.ContainerRegistry --query registrationState -o tsv` | 등록 상태 확인 |
 
 ---
 
@@ -105,35 +105,129 @@
 |---|---|
 | `-n <네임스페이스>` | 특정 네임스페이스 대상 (예: `-n kube-system`) |
 | `-A` / `--all-namespaces` | 전체 네임스페이스 |
-| `-o wide` / `-o yaml` / `-o json` | 출력 형식 (wide=자세히, yaml/json=전체 정의) |
+| `-o wide` / `-o yaml` / `-o json` | 출력 형식 |
 | `--watch` / `-w` | 실시간 감시 (Ctrl+C로 종료) |
 | `-f <파일>` | 파일 지정 |
 
 ---
 
-## 4. 전체 흐름 (구축 → 운영 → 정리)
+## 4. 자주 만나는 에러 & 해결법 (트러블슈팅)
 
-1. **인프라 준비**
-   `az group create` → `az aks create` → `az aks get-credentials`
-2. **이미지 저장소 연결**
-   `az acr create` → `az aks update --attach-acr`
-3. **빌드 & 배포**
-   `az acr build` → `kubectl apply -f`
-4. **확인**
-   `kubectl get pods` / `kubectl get service`
-5. **운영 중 조절**
-   `kubectl scale` / `kubectl set image`
-6. **정리 (과금 방지)**
-   `az group delete`
+### 에러 1: 자격증명 만료 (가장 흔함)
+
+**증상**
+```
+error: You must be logged in to the server (the server has asked for the client to provide credentials)
+```
+또는
+```
+error: error validating "nginx.yaml": ... the server has asked for the client to provide credentials
+```
+
+**원인**: kubectl 인증 토큰 만료. 시간이 지나거나 Cloud Shell 세션이 새로 열리면 자연스럽게 발생 (잘못한 것 아님).
+
+**해결**: 자격증명 다시 받기
+```
+az aks get-credentials \
+  --resource-group K8s_test \
+  --name web-test \
+  --overwrite-existing
+```
+그래도 안 되면 (Azure 로그인 자체가 풀린 경우):
+```
+az login
+# 그다음 위 get-credentials 다시 실행
+```
 
 ---
 
-## 5. 기억할 감각
+### 에러 2: 서비스가 구독에 등록 안 됨
+
+**증상**
+```
+(MissingSubscriptionRegistration) The subscription is not registered to use namespace 'Microsoft.ContainerRegistry'.
+```
+
+**원인**: 해당 Azure 서비스(예: ACR)를 구독에서 처음 써서 활성화가 안 됨.
+
+**해결**: 서비스 등록 후 Registered 확인
+```
+az provider register --namespace Microsoft.ContainerRegistry
+# 1~2분 뒤 상태 확인 (Registered 나올 때까지)
+az provider show --namespace Microsoft.ContainerRegistry --query registrationState -o tsv
+# Registered 확인되면 원래 하려던 명령 다시 실행
+```
+
+---
+
+### 에러 3: 꺾쇠 괄호를 그대로 입력
+
+**증상**
+```
+bash: K8s_test: No such file or directory
+```
+
+**원인**: `<K8s_test>` 처럼 `< >`를 실제로 입력함. 괄호는 "여기에 값을 넣으라"는 표시일 뿐이고, bash에서 `<`는 파일 입력 기호로 해석됨.
+
+**해결**: 괄호 빼고 이름만 입력
+```
+# 잘못된 예
+az aks get-credentials --resource-group <K8s_test> --name <web-test>
+# 올바른 예
+az aks get-credentials --resource-group K8s_test --name web-test
+```
+
+---
+
+### 에러 4: 웹 페이지가 nginx 기본 페이지로 나옴
+
+**증상**: 내 HTML로 바꿨는데 "Welcome to nginx!" 기본 페이지가 뜸.
+
+**원인**: Dockerfile의 COPY 도착지가 `index.html`이 아니거나, 파일명만 바꾸고 Dockerfile을 안 고침. nginx는 기본으로 `index.html`을 찾음.
+
+**해결**: COPY 오른쪽(도착지)을 반드시 `index.html`로
+```
+FROM nginx:latest
+# 왼쪽(내 파일명)은 자유, 오른쪽(nginx가 읽는 위치)은 index.html 고정
+COPY index1.html /usr/share/nginx/html/index.html
+```
+Actions 탭에서 워크플로가 빨간 X면 빌드 실패 → 로그 확인.
+
+---
+
+### 에러 5: EXTERNAL-IP가 계속 pending
+
+**증상**: `kubectl get service`에서 EXTERNAL-IP가 `<pending>` 상태.
+
+**원인**: Azure가 로드밸런서와 공개 IP를 만드는 중. 보통 1~2분 걸림.
+
+**해결**: 잠시 기다리며 감시
+```
+kubectl get service <서비스이름> --watch
+# IP가 뜨면 Ctrl+C로 종료
+```
+2~3분 넘게 계속 pending이면 `kubectl describe service <이름>`로 이벤트 확인.
+
+---
+
+## 5. 전체 흐름 (구축 → 운영 → 정리)
+
+1. **인프라 준비** — `az group create` → `az aks create` → `az aks get-credentials`
+2. **이미지 저장소 연결** — `az acr create` → `az aks update --attach-acr`
+3. **빌드 & 배포** — `az acr build` → `kubectl apply -f`
+4. **확인** — `kubectl get pods` / `kubectl get service`
+5. **운영 중 조절** — `kubectl scale` / `kubectl set image`
+6. **정리 (과금 방지)** — `az group delete`
+
+---
+
+## 6. 기억할 감각
 
 - **az = 클러스터 바깥(인프라), kubectl = 클러스터 안(워크로드)**
 - **확인은 `get`(훑기)과 `describe`(파보기)** — 문제 생기면 `describe`와 `logs`
 - **생성·수정은 거의 다 `apply -f` 하나로 통일** (YAML 고치고 다시 apply)
 - **삭제는 `delete`**, 전체 정리는 `az group delete`
+- **credentials 에러는 `az aks get-credentials`로 재발급** (자주 겪는 정상 상황)
 - **실습 끝나면 반드시 리소스 삭제** — AKS는 켜둔 시간만큼 과금됨
 
 ---
